@@ -11,7 +11,10 @@ class OsmHandler(xml.sax.ContentHandler):
     def __init__(self):
         # element <node>
         self.element_node_active = False
+        self.element_node_has_tags = False
         self.node_id = -1
+        self.node_lat = -1
+        self.node_lon = -1
         # element <way>
         self.element_way_active = False
         self.way_id = -1
@@ -26,10 +29,11 @@ class OsmHandler(xml.sax.ContentHandler):
         if   element == 'node':
             self.element_node_active = True
             self.node_id = attrib['id']
-            db.execute('INSERT INTO nodes (node_id,lon,lat) VALUES (?,?,?)',
-             (self.node_id, attrib['lon'], attrib['lat']))
+            self.node_lat = attrib['lat']
+            self.node_lon = attrib['lon']
         elif element == 'tag':
             if self.element_node_active:
+                self.element_node_has_tags = True
                 db.execute('INSERT INTO node_tags (node_id,key,value) VALUES (?,?,?)',
                  (self.node_id, attrib['k'], attrib['v']))
             elif self.element_way_active:
@@ -42,13 +46,21 @@ class OsmHandler(xml.sax.ContentHandler):
             self.element_way_active = True
             self.way_id = attrib['id']
         elif element == 'nd':
-            self.way_node_order += 1
-            db.execute('INSERT INTO way_nodes (way_id,node_id,node_order) VALUES (?,?,?)',
-             (self.way_id, attrib['ref'], self.way_node_order))
+            # skip the node which is not in nodes table yet
+            db.execute('SELECT node_id FROM nodes WHERE node_id=? LIMIT 1', (attrib['ref'],))
+            if db.fetchone() is not None:
+              self.way_node_order += 1
+              db.execute('INSERT INTO way_nodes (way_id,node_id,node_order) VALUES (?,?,?)',
+               (self.way_id, attrib['ref'], self.way_node_order))
         elif element == 'relation':
             self.element_relation_active = True
             self.relation_id = attrib['id']
         elif element == 'member':
+            # skip the node which is not in nodes table yet
+            if attrib['type'] == 'node':
+              db.execute('SELECT 1 FROM nodes WHERE node_id=? LIMIT 1', (attrib['ref'],))
+              if db.fetchone() is None:
+                  return
             self.relation_member_order += 1
             db.execute('INSERT INTO relation_members (relation_id,type,ref,role,member_order) VALUES (?,?,?,?,?)',
              (self.relation_id, attrib['type'], attrib['ref'], attrib['role'], self.relation_member_order))
@@ -56,8 +68,16 @@ class OsmHandler(xml.sax.ContentHandler):
     # call when an element ends
     def endElement(self, element):
         if   element == 'node':
+            if self.element_node_has_tags:
+              db.execute('INSERT INTO nodes (node_id,lon,lat) VALUES (?,?,?)',
+               (self.node_id, self.node_lon, self.node_lat))
+
             self.element_node_active = False
+            self.element_node_has_tags = False
             self.node_id = -1
+            self.node_lat = -1
+            self.node_lon = -1
+
         elif element == 'way':
             self.element_way_active = False
             self.way_id = -1
